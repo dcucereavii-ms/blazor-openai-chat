@@ -1,0 +1,386 @@
+﻿@page "/"
+@using Azure.AI.OpenAI;
+@using Azure;
+@using Markdig;
+@inject IConfiguration _configuration
+@inject IJSRuntime _jsRuntime
+
+@page "/apiintegration"
+@using System.Net.Http
+@using System.Net.Http.Json;
+@using System.Text;
+@using System.Text.Json.Serialization;
+@using System.Diagnostics;
+@using static AzureOpenAIChat.Pages.Index;
+
+@using Microsoft.CognitiveServices.Speech;
+@using Microsoft.CognitiveServices.Speech.Audio;
+@using Microsoft.CognitiveServices.Speech.PronunciationAssessment;
+
+@inject HttpClient HttpClient
+@using Microsoft.Extensions.DependencyInjection
+@inject IJSRuntime JSRuntime
+<PageTitle>Index</PageTitle>
+
+<style>
+    textarea {
+        border: 1px dashed #888;
+        border-radius: 5px;
+        width: 80%;
+        overflow: auto;
+        background: #f7f7f7
+    }
+    /* improved CSS for speech bubbles */
+    .assistant, .user {
+        position: relative;
+        font-family: arial;
+        font-size: 1.1em;
+        border-radius: 10px;
+        padding: 20px;
+        margin-bottom: 20px;
+    }
+
+        .assistant:after, .user:after {
+            content: '';
+            border: 20px solid transparent;
+            position: absolute;
+            margin-top: -30px;
+        }
+
+    .user {
+        background: #03a9f4;
+        color: #fff;
+        margin-left: 20%;
+        margin-right: 100px;
+        top: 30%;
+        text-align: right;
+    }
+
+    .assistant {
+        background: #4CAF50;
+        color: #fff;
+        margin-left: 100px;
+        margin-right: 20%;
+    }
+
+    .user:after {
+        border-left-color: #03a9f4;
+        border-right: 0;
+        right: -20px;
+    }
+
+    .assistant:after {
+        border-right-color: #4CAF50;
+        border-left: 0;
+        left: -20px;
+    }
+
+    .msg {
+        font-size: medium;
+    }
+</style>
+
+<h3>API Integration</h3>
+<p>Blazor ChatGPT</p>
+<p style="font-size:small"><b>Total Tokens:</b> @TotalTokens</p>
+<div id="chatcontainer" style="height:550px; width:80%; overflow: scroll;">
+    @foreach (var item in ChatMessages)
+    {
+        <div>
+            @if (item.role == ChatRole.User)
+            {
+                <div style="float: right; margin-right: 20px; margin-top: 10px">
+                    <b>Human</b>
+                </div>
+                <div class="@item.role">
+                    <div class="msg">
+                        @item.content
+                    </div>
+                </div>
+            }
+            @if (item.role == ChatRole.Assistant)
+            {
+                <div style="float: left; margin-left: 20px; margin-top: 10px">
+                    <b>ChatGPT&nbsp;&nbsp;</b>
+                </div>
+                <div class="@item.role">
+                    <div class="msg">
+                        @if (item.content != null)
+                        {
+                            @((MarkupString)item.content.ToHtml())
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@if (!Processing)
+{
+    <textarea rows="3" cols="60" @bind="prompt" />
+    <br />
+    <button class="btn btn-primary"
+            @onclick="CallChatGPT">
+        Call ChatGPT
+    </button>
+    <button class="btn btn-info"
+            @onclick="RestartChatGPT">
+        Restart
+    </button>
+    <span>&nbsp;</span>
+    <button class="btn btn-primary"
+            @onclick="StartSpeechRecognition">
+        Start Speech Recognition
+    </button>
+}
+else
+{
+    <br>
+    <h4>Processing...</h4>
+}
+
+<br /><p style="color:red">@ErrorMessage</p>
+
+@code {
+    string Endpoint = "";
+    string DeploymentOrModelName = "";
+    string Key = "";
+    List<ChatMessage> ChatMessages = new List<ChatMessage>();
+    string prompt = "Write a 10 word description of Azure OpenAI";
+    string ErrorMessage = "";
+    bool Processing = false;
+    int TotalTokens = 0;
+    private string apiResponse = "";
+
+    public Index()
+    {
+    }
+
+    /* private async Task FetchData(ChatCompletionsOptions chatCompletionsOptions)
+             {
+             try
+             {
+             HttpClient.DefaultRequestHeaders.Add("api-key", "ad297095570d432ea2155ce322f31154");
+             HttpClient.DefaultRequestHeaders.Add("Ocp-Apim-Subscription-Key", "b90821de49814189a6fb1258030667e8");
+             var response = await HttpClient.PostAsJsonAsync("https://apim-demo-qa.azure-api.net/gpt/", chatCompletionsOptions);
+             response.EnsureSuccessStatusCode();
+             var content = await response.Content.ReadAsStringAsync();
+         apiResponse = content;
+         }
+         catch (Exception ex)
+             {
+             apiResponse = "Error: " + ex.Message;
+     }
+     } */
+
+    public class ChatMessage
+    {
+        public string role { get; set; }
+        public string content { get; set; }
+    }
+
+    protected override void OnInitialized()
+    {
+        // Get the Azure OpenAI Service configuration values
+        Endpoint =
+        _configuration["AzureOpenAIServiceOptions:Endpoint"] ?? "";
+        DeploymentOrModelName =
+        _configuration["AzureOpenAIServiceOptions:DeploymentOrModelName"] ?? "";
+        Key =
+        _configuration["AzureOpenAIServiceOptions:Key"] ?? "";
+        // Create a new list of ChatPrompt objects and initialize it with the
+        // system's introductory message
+        string SystemMessage = "You are helpful Assistant.";
+        SystemMessage += "You will always reply with a Markdown formatted response.";
+        ChatMessage item = new ChatMessage();
+    }
+
+    protected override async Task
+    OnAfterRenderAsync(bool firstRender)
+    {
+        try
+        {
+            await _jsRuntime.InvokeAsync<string>
+    (
+    "ScrollToBottom", "chatcontainer"
+    );
+        }
+        catch
+        {
+            // do nothing if this fails
+        }
+    }
+
+    void RestartChatGPT()
+    {
+        prompt = "Write a 10 word description of Azure OpenAI";
+        ChatMessages = new List<ChatMessage>();
+        TotalTokens = 0;
+        ErrorMessage = "";
+        ChatMessages.Add(
+            new ChatMessage(
+            //ChatRole.System, "You are helpful Assistant"
+            )
+        );
+        StateHasChanged();
+    }
+
+
+    public class ChatResponse
+    {
+        public string id { get; set; }
+        //public string object { get; set; }
+        public long created { get; set; }
+        public string model { get; set; }
+        public List<Choice> choices { get; set; }
+        //public Usage usage { get; set; }
+    }
+
+    public class Choice
+    {
+        public int index { get; set; }
+        public string finish_reason { get; set; }
+        public Message message { get; set; }
+    }
+
+    public class Message
+    {
+        public string role { get; set; }
+        public string content { get; set; }
+    }
+
+    private string responseData = ""; // Property to store the response data
+
+    async Task CallChatGPT()
+    {
+        try
+        {
+            // Set Processing to true to indicate that the method is processing
+            Processing = true;
+            // Call StateHasChanged to refresh the UI
+            StateHasChanged();
+            // Clear any previous error messages
+            ErrorMessage = "";
+            //ChatMessages.Add(new ChatMessage(ChatRole.User, prompt));
+            // Create a new HttpClient
+            using (var httpClient = new HttpClient())
+            {
+                // Set the API key header if needed
+                httpClient.DefaultRequestHeaders.Add("api-key", "ad297095570d432ea2155ce322f31154");
+                // Create a JSON object with the chat message
+                var requestBody = new
+                {
+                    messages = new List<ChatMessage>()
+{
+                        new ChatMessage
+                        {
+                            role = "user",
+                            content = prompt
+                        }
+                    },
+                    temperature = 0.7f,
+                    top_p = 0.95f,
+                    frequency_penalty = 0f,
+                    presence_penalty = 0f,
+                    max_tokens = 800
+                };
+                // Serialize the object to JSON
+                var jsonContent = new StringContent(
+                    System.Text.Json.JsonSerializer.Serialize(requestBody),
+                    Encoding.UTF8,
+                    "application/json");
+                // Make an HTTP POST request to your APIM endpoint
+                var response = await httpClient.PostAsync("https://apim-demo-qa.azure-api.net/gpt/", jsonContent);
+
+                // Check if the response is successful
+                if (response.IsSuccessStatusCode)
+                {
+                    // Read and handle the response if needed
+                    var apiResponse = await response.Content.ReadAsStringAsync();
+                    //responseData = apiResponse;
+                    var chatResponse = Newtonsoft.Json.JsonConvert.DeserializeObject<ChatResponse>(apiResponse);
+                    foreach (var choice in chatResponse.choices)
+                    {
+                        var message = choice.message;
+                        ChatMessages.Add(new ChatMessage
+                        {
+                            role = message.role,
+                            content = message.content
+                        });
+                    }
+
+                    // Update the UI or handle the API response as required
+                }
+                else
+                {
+                    ErrorMessage = $"Error: {response.StatusCode} - {response.ReasonPhrase}";
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Set ErrorMessage to the exception message if an error occurs
+            ErrorMessage = "Error: " + ex.Message;
+        }
+        finally
+        {
+            // Clear the prompt variable
+            prompt = "";
+            // Set Processing to false to indicate that the method is done processing
+            Processing = false;
+            // Call StateHasChanged to refresh the UI
+            StateHasChanged();
+        }
+    }
+    string recognizedText = ""; // Declare recognizedText here at the code block level
+
+    async Task StartSpeechRecognition()
+    {
+        try
+        {
+            var config = SpeechConfig.FromSubscription("YourSubscriptionKey", "YourServiceRegion");
+
+            // Creates a speech recognizer using microphone as audio input.
+            using (var recognizer = new SpeechRecognizer(config))
+            {
+                // Starts recognizing.
+                recognizedText = "Listening...";
+
+                // Subscribe to the Recognized event to handle when speech is recognized
+                recognizer.Recognized += async (s, e) =>
+                {
+                    if (e.Result.Reason == ResultReason.RecognizedSpeech)
+                    {
+                        recognizedText = e.Result.Text;
+                    }
+                    else if (e.Result.Reason == ResultReason.NoMatch)
+                    {
+                        recognizedText = "Speech could not be recognized.";
+                    }
+                    else if (e.Result.Reason == ResultReason.Canceled)
+                    {
+                        var cancellation = CancellationDetails.FromResult(e.Result);
+                        recognizedText = $"Recognition canceled. Reason={cancellation.Reason}.";
+                    }
+
+                    // Update UI after recognition
+                    await InvokeAsync(() => StateHasChanged());
+                };
+
+                // Starts speech recognition
+                await recognizer.StartContinuousRecognitionAsync().ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            recognizedText = $"Error starting speech recognition: {ex.Message}";
+        }
+    }
+}
+
+
+
+
+
+
